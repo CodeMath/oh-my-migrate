@@ -137,8 +137,8 @@ class PostgreSQLInspector:
                     ),
                     is_primary_key=(col_name in pk_cols[tbl_name]),
                     is_unique=(col_name in unique_cols[tbl_name]),
-                    foreign_table=fk_map.get((tbl_name, col_name), (None, None))[0],
-                    foreign_column=fk_map.get((tbl_name, col_name), (None, None))[1],
+                    foreign_table=(fk := fk_map.get((tbl_name, col_name), (None, None)))[0],
+                    foreign_column=fk[1],
                 )
                 for col_name, data_type, is_nullable, col_default, char_max_len in columns
             )
@@ -302,8 +302,6 @@ class PostgreSQLInspector:
                 """),
                 {"schema": schema},
             ).fetchall()
-
-        from collections import defaultdict
 
         result: dict[str, list[tuple[str, str]]] = defaultdict(list)
         for row in rows:

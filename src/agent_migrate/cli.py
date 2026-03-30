@@ -216,23 +216,21 @@ def auto(
             format_plan,
             json_auto,
         )
-        from agent_migrate.migration.planner import MigrationPlanner  # noqa: PLC0415
         from agent_migrate.orchestrator import _db_label  # noqa: PLC0415
 
         r = _orchestrator.pipeline_result(path.resolve(), db_url)
-        migration_plan = MigrationPlanner().plan(r.diffs, r.models) if r.diffs else None
+        migration_plan = _orchestrator._planner.plan(r.diffs, r.models) if r.diffs else None
 
         generated_file: str | None = None
         applied = False
 
         if do_generate and r.diffs:
             msg = message or "auto-generated migration"
-            file_path = _orchestrator.generate(path.resolve(), msg, db_url)
-            generated_file = str(file_path)
+            gen_path = _orchestrator.generate_from_result(r, path.resolve(), msg)
+            generated_file = str(gen_path)
 
         if do_apply and r.diffs:
-            msg = message or "auto-generated migration"
-            _orchestrator.apply(path.resolve(), db_url, execute=execute, force=force)
+            _orchestrator.apply_from_result(r, execute=execute, force=force)
             applied = execute
 
         if use_json:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 
 from agent_migrate.diff.type_map import TypeMapper
@@ -16,6 +17,8 @@ from agent_migrate.types import (
     RiskLevel,
     RoleRequirement,
 )
+
+_RE_WHITESPACE = re.compile(r"\s+")
 
 
 class DiffEngine:
@@ -397,8 +400,7 @@ class DiffEngine:
 
 def _normalize_sql(expr: str) -> str:
     """Normalize SQL expression for comparison (lowercase, collapse whitespace)."""
-    import re
-    return re.sub(r"\s+", " ", expr.lower().strip())
+    return _RE_WHITESPACE.sub(" ", expr.lower().strip())
 
 
 def _defaults_differ(model_default: str | None, db_default: str | None) -> bool:

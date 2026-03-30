@@ -288,6 +288,49 @@ class Orchestrator:
         executor.execute(r.engine, migration_plan, force=force)
         return "Migration applied successfully."
 
+    def generate_from_result(
+        self,
+        r: _PipelineResult,
+        project_root: Path,
+        message: str,
+        fmt: str = "auto",
+    ) -> Path:
+        """Generate migration file from pre-computed pipeline result."""
+        from agent_migrate.config import AlembicDetector  # noqa: PLC0415
+
+        migration_plan = self._planner.plan(r.diffs, r.models)
+        alembic_cfg = AlembicDetector().detect(project_root)
+        use_alembic = fmt == "alembic" or (fmt == "auto" and alembic_cfg is not None)
+
+        if use_alembic and alembic_cfg is not None:
+            from agent_migrate.migration.alembic_compat import AlembicGenerator  # noqa: PLC0415
+
+            return AlembicGenerator(alembic_cfg).generate(migration_plan, message)
+
+        from agent_migrate.migration.raw_sql import RawSQLGenerator  # noqa: PLC0415
+
+        output_dir = project_root / "migrations"
+        return RawSQLGenerator(output_dir).generate(migration_plan, message)
+
+    def apply_from_result(
+        self,
+        r: _PipelineResult,
+        execute: bool = False,
+        force: bool = False,
+    ) -> str:
+        """Apply migration from pre-computed pipeline result."""
+        from agent_migrate.migration.executor import MigrationExecutor  # noqa: PLC0415
+
+        migration_plan = self._planner.plan(r.diffs, r.models)
+        executor = MigrationExecutor()
+
+        if not execute:
+            sql_lines = executor.dry_run(migration_plan)
+            return "Dry-run (add --execute to apply):\n" + "\n".join(sql_lines)
+
+        executor.execute(r.engine, migration_plan, force=force)
+        return "Migration applied successfully."
+
     def rls(self, project_root: Path, db_url: str | None = None) -> str:
         """Return formatted RLS policy status."""
         r = self._run_pipeline(project_root, db_url)

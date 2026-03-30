@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -136,8 +137,6 @@ def json_rls(
     roles: list[DBRoleInfo],
 ) -> str:
     """JSON RLS status output."""
-    from collections import defaultdict
-
     policies_by_table: dict[str, list[str]] = defaultdict(list)
     for p in rls_policies:
         policies_by_table[p.table_name].append(p.policy_name)
