@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual env
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Testing/Lint caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# OMC state (internal)
+.omc/
+.omx/
+
+# Environment
+.env
+.env.local
+.env.development

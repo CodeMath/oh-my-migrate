@@ -1,0 +1,50 @@
+[project]
+name = "agent-migrate"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "AI-agent-optimized DB migration CLI for SQLAlchemy + PostgreSQL"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.0",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1",
+    "python-dotenv>=1.0",
+    "alembic>=1.13",
+]
+
+[project.scripts]
+agent-migrate = "agent_migrate.cli:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "testcontainers[postgres]>=4.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_migrate"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH"]
+ignore = ["B008"]  # typer.Option() in function defaults is idiomatic Typer
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
