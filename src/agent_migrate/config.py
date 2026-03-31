@@ -19,6 +19,14 @@ from agent_migrate.exceptions import ConfigNotFoundError
 
 
 @dataclass(frozen=True)
+class MigrateConfig:
+    """Loaded from .agent-migrate.toml configuration file."""
+    schema: str = "public"
+    exclude_tables: tuple[str, ...] = ()
+    resolve_mixins: bool = True
+
+
+@dataclass(frozen=True)
 class AlembicConfig:
     ini_path: Path
     script_location: Path
@@ -167,6 +175,39 @@ class ModelDiscovery:
                     yield from self._iter_python_files(entry)
             elif entry.is_file() and entry.suffix == ".py":
                 yield entry
+
+
+class MigrateConfigLoader:
+    """Load .agent-migrate.toml configuration file."""
+
+    CONFIG_FILENAME = ".agent-migrate.toml"
+
+    def load(self, project_root: Path) -> MigrateConfig:
+        """Load config from .agent-migrate.toml if it exists, else return defaults."""
+        config_path = project_root / self.CONFIG_FILENAME
+        if not config_path.exists():
+            return MigrateConfig()
+
+        with open(config_path, "rb") as f:
+            data = tomllib.load(f)
+
+        db_section = data.get("database", {})
+        models_section = data.get("models", {})
+
+        schema = db_section.get("schema", "public")
+        exclude_tables_raw = db_section.get("exclude_tables", [])
+        if isinstance(exclude_tables_raw, list):
+            exclude_tables = tuple(str(t) for t in exclude_tables_raw)
+        else:
+            exclude_tables = ()
+
+        resolve_mixins = models_section.get("resolve_mixins", True)
+
+        return MigrateConfig(
+            schema=str(schema),
+            exclude_tables=exclude_tables,
+            resolve_mixins=bool(resolve_mixins),
+        )
 
 
 def mask_db_url(url: str) -> str:

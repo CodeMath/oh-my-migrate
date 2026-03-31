@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy import Engine, create_engine
 
-from agent_migrate.config import ConfigDetector, ModelDiscovery
+from agent_migrate.config import ConfigDetector, MigrateConfigLoader, ModelDiscovery
 from agent_migrate.diff import compute_diff
 from agent_migrate.diff.engine import DiffEngine
 from agent_migrate.diff.risk import RiskAnalyzer
@@ -104,22 +104,39 @@ class Orchestrator:
         self._inspector = PostgreSQLInspector()
         self._diff_engine = DiffEngine()
         self._preset_resolver = PresetResolver()
+        self._migrate_config_loader = MigrateConfigLoader()
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _run_pipeline(
-        self, project_root: Path, db_url_hint: str | None
+        self,
+        project_root: Path,
+        db_url_hint: str | None,
+        schema: str = "public",
+        exclude_tables: list[str] | None = None,
     ) -> _PipelineResult:
         """Run the full analysis pipeline: detect → parse → inspect → diff → risk."""
+        # Load .agent-migrate.toml config (CLI args override config file values)
+        file_config = self._migrate_config_loader.load(project_root)
+
+        effective_schema = schema if schema != "public" else file_config.schema
+        effective_exclude = exclude_tables if exclude_tables else list(file_config.exclude_tables)
+
         db_url = self._config.detect(project_root, db_url_hint)
         models = self._discovery.discover(project_root)
         model_schemas = parse_models(models)
 
         try:
             engine = create_engine(db_url)
-            tables = inspect_db(engine)
+            tables = inspect_db(engine, schema=effective_schema)
         except Exception as exc:  # noqa: BLE001
             raise InspectorError(f"Cannot connect to database: {exc!s}") from exc
+
+        # Filter out excluded tables from both DB tables and model schemas
+        if effective_exclude:
+            excluded = set(effective_exclude)
+            tables = [t for t in tables if t.name not in excluded]
+            model_schemas = [m for m in model_schemas if m.tablename not in excluded]
 
         ref_map = self._ref_engine.assign(model_schemas, tables)
         raw_diffs = compute_diff(model_schemas, tables)
@@ -133,9 +150,9 @@ class Orchestrator:
             model_schemas, is_supabase
         )
 
-        rls_statuses, rls_policies = self._inspector.inspect_rls(engine)
-        roles = self._inspector.inspect_roles(engine)
-        grants = self._inspector.inspect_grants(engine)
+        rls_statuses, rls_policies = self._inspector.inspect_rls(engine, effective_schema)
+        roles = self._inspector.inspect_roles(engine, effective_schema)
+        grants = self._inspector.inspect_grants(engine, effective_schema)
 
         # RLS/ROLE diffs
         rls_diffs = self._diff_engine.compute_rls_diff(
@@ -218,9 +235,15 @@ class Orchestrator:
 
     # ── Public commands ───────────────────────────────────────────────────────
 
-    def snapshot(self, project_root: Path, db_url: str | None = None) -> str:
+    def snapshot(
+        self,
+        project_root: Path,
+        db_url: str | None = None,
+        schema: str = "public",
+        exclude_tables: list[str] | None = None,
+    ) -> str:
         """Return formatted snapshot of models + DB state."""
-        r = self._run_pipeline(project_root, db_url)
+        r = self._run_pipeline(project_root, db_url, schema=schema, exclude_tables=exclude_tables)
         return format_snapshot(
             models=r.models,
             tables=r.tables,
@@ -229,14 +252,26 @@ class Orchestrator:
             db_name=_db_label(r.db_url),
         )
 
-    def diff(self, project_root: Path, db_url: str | None = None) -> str:
+    def diff(
+        self,
+        project_root: Path,
+        db_url: str | None = None,
+        schema: str = "public",
+        exclude_tables: list[str] | None = None,
+    ) -> str:
         """Return formatted diff output."""
-        r = self._run_pipeline(project_root, db_url)
+        r = self._run_pipeline(project_root, db_url, schema=schema, exclude_tables=exclude_tables)
         return format_diff(diffs=r.diffs, ref_map=r.ref_map)
 
-    def plan(self, project_root: Path, db_url: str | None = None) -> str:
+    def plan(
+        self,
+        project_root: Path,
+        db_url: str | None = None,
+        schema: str = "public",
+        exclude_tables: list[str] | None = None,
+    ) -> str:
         """Return formatted migration plan with risk."""
-        r = self._run_pipeline(project_root, db_url)
+        r = self._run_pipeline(project_root, db_url, schema=schema, exclude_tables=exclude_tables)
         migration_plan = self._planner.plan(r.diffs, r.models)
         return format_plan(plan=migration_plan, ref_map=r.ref_map)
 
@@ -246,11 +281,13 @@ class Orchestrator:
         message: str,
         db_url: str | None = None,
         fmt: str = "auto",
+        schema: str = "public",
+        exclude_tables: list[str] | None = None,
     ) -> Path:
         """Generate a migration file. Returns the created file path."""
         from agent_migrate.config import AlembicDetector  # noqa: PLC0415
 
-        r = self._run_pipeline(project_root, db_url)
+        r = self._run_pipeline(project_root, db_url, schema=schema, exclude_tables=exclude_tables)
         migration_plan = self._planner.plan(r.diffs, r.models)
 
         alembic_cfg = AlembicDetector().detect(project_root)
@@ -272,11 +309,13 @@ class Orchestrator:
         db_url: str | None = None,
         execute: bool = False,
         force: bool = False,
+        schema: str = "public",
+        exclude_tables: list[str] | None = None,
     ) -> str:
         """Apply (or dry-run) the migration. Returns a result summary."""
         from agent_migrate.migration.executor import MigrationExecutor  # noqa: PLC0415
 
-        r = self._run_pipeline(project_root, db_url)
+        r = self._run_pipeline(project_root, db_url, schema=schema, exclude_tables=exclude_tables)
         migration_plan = self._planner.plan(r.diffs, r.models)
 
         executor = MigrationExecutor()
@@ -331,9 +370,15 @@ class Orchestrator:
         executor.execute(r.engine, migration_plan, force=force)
         return "Migration applied successfully."
 
-    def rls(self, project_root: Path, db_url: str | None = None) -> str:
+    def rls(
+        self,
+        project_root: Path,
+        db_url: str | None = None,
+        schema: str = "public",
+        exclude_tables: list[str] | None = None,
+    ) -> str:
         """Return formatted RLS policy status."""
-        r = self._run_pipeline(project_root, db_url)
+        r = self._run_pipeline(project_root, db_url, schema=schema, exclude_tables=exclude_tables)
         return format_rls(
             rls_statuses=r.rls_statuses,
             rls_policies=r.rls_policies,
@@ -341,7 +386,13 @@ class Orchestrator:
         )
 
     def pipeline_result(
-        self, project_root: Path, db_url: str | None = None
+        self,
+        project_root: Path,
+        db_url: str | None = None,
+        schema: str = "public",
+        exclude_tables: list[str] | None = None,
     ) -> _PipelineResult:
         """Return raw pipeline result for JSON/auto commands."""
-        return self._run_pipeline(project_root, db_url)
+        return self._run_pipeline(
+            project_root, db_url, schema=schema, exclude_tables=exclude_tables
+        )
