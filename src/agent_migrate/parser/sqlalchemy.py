@@ -55,7 +55,7 @@ class SQLAlchemyParser:
     4. ForeignKey("table.column") detection
     5. Mapped[str | None] / Optional[str] → nullable=True
     6. server_default detection
-    7. Same-file mixin inheritance (TimestampMixin pattern)
+    7. Same-file AND cross-file mixin inheritance
     8. Multiple models per file
     9. Ignores classes not inheriting from Base/DeclarativeBase
     10. __rls__ annotation extraction
@@ -63,6 +63,37 @@ class SQLAlchemyParser:
 
     def __init__(self) -> None:
         self._rls_raw: dict[str, dict[str, str]] = {}
+        # Cross-file class registry: {class_name: ast.ClassDef}
+        self._cross_file_classes: dict[str, ast.ClassDef] = {}
+        # Cross-file base names (declarative bases found across all files)
+        self._cross_file_bases: set[str] = set()
+
+    def collect_cross_file_classes(self, paths: list[Path]) -> None:
+        """Pre-scan all files to build a cross-file class registry.
+
+        This enables mixin resolution across file boundaries (e.g., a mixin
+        defined in base.py used by a model in models.py).
+        """
+        for path in paths:
+            try:
+                source = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if not source.strip():
+                continue
+            try:
+                tree = ast.parse(source, filename=str(path))
+            except SyntaxError:
+                continue
+
+            class_defs = self._collect_class_definitions(tree)
+            base_names = self._find_base_class_names(tree, class_defs)
+            self._cross_file_bases.update(base_names)
+
+            for name, class_def in class_defs.items():
+                # Store non-base classes as potential cross-file mixins
+                if not self._is_base_definition(class_def):
+                    self._cross_file_classes[name] = class_def
 
     def parse_file(self, path: Path) -> list[ModelSchema]:
         """Parse all SQLAlchemy models from a Python file."""
@@ -84,11 +115,17 @@ class SQLAlchemyParser:
         class_defs = self._collect_class_definitions(tree)
         base_names = self._find_base_class_names(tree, class_defs)
 
+        # Merge cross-file base names for cross-file inheritance resolution
+        all_base_names = base_names | self._cross_file_bases
+
+        # Merge cross-file class defs for inheritance checks
+        all_class_defs = {**self._cross_file_classes, **class_defs}
+
         models: list[ModelSchema] = []
         for class_def in class_defs.values():
             if self._is_base_definition(class_def):
                 continue
-            if not self._inherits_from_base(class_def, base_names, class_defs, set()):
+            if not self._inherits_from_base(class_def, all_base_names, all_class_defs, set()):
                 continue
             model = self._parse_model_class(class_def, class_defs, filename)
             if model is not None:
@@ -174,24 +211,20 @@ class SQLAlchemyParser:
         class_def: ast.ClassDef,
         class_defs: dict[str, ast.ClassDef],
     ) -> list[ast.stmt]:
-        """Merge same-file mixin column stmts into the model class body.
+        """Merge mixin column stmts into the model class body.
+
+        Resolves both same-file and cross-file mixins by checking:
+        1. Same-file class definitions (class_defs)
+        2. Cross-file class registry (self._cross_file_classes)
 
         Strategy:
-        - Collect mixin columns (left-to-right base order)
+        - Collect mixin columns (left-to-right base order, recursively)
         - Collect class body columns
         - Child columns override mixin columns on name conflict
         - Final order: mixin-only columns first, then child columns
         """
         mixin_stmts: dict[str, ast.stmt] = {}
-        for base in class_def.bases:
-            base_name = get_node_name(base)
-            if base_name and base_name in class_defs:
-                mixin_def = class_defs[base_name]
-                if not self._is_base_definition(mixin_def):
-                    for stmt in mixin_def.body:
-                        col_name = self._get_col_name(stmt)
-                        if col_name:
-                            mixin_stmts[col_name] = stmt
+        self._collect_mixin_stmts(class_def, class_defs, mixin_stmts, set())
 
         child_stmts: dict[str, ast.stmt] = {}
         for stmt in class_def.body:
@@ -207,6 +240,36 @@ class SQLAlchemyParser:
         merged.update(child_stmts)
 
         return list(merged.values())
+
+    def _collect_mixin_stmts(
+        self,
+        class_def: ast.ClassDef,
+        class_defs: dict[str, ast.ClassDef],
+        out: dict[str, ast.stmt],
+        visited: set[str],
+    ) -> None:
+        """Recursively collect column stmts from all mixin bases."""
+        for base in class_def.bases:
+            base_name = get_node_name(base)
+            if not base_name or base_name in visited:
+                continue
+            visited.add(base_name)
+
+            # Look up in same-file defs first, then cross-file registry
+            mixin_def = class_defs.get(base_name) or self._cross_file_classes.get(base_name)
+            if mixin_def is None:
+                continue
+            if self._is_base_definition(mixin_def):
+                continue
+
+            # Recursively collect from the mixin's own bases first
+            self._collect_mixin_stmts(mixin_def, class_defs, out, visited)
+
+            # Then add the mixin's own columns (child overrides parent)
+            for stmt in mixin_def.body:
+                col_name = self._get_col_name(stmt)
+                if col_name:
+                    out[col_name] = stmt
 
     def _get_col_name(self, stmt: ast.stmt) -> str | None:
         """Return the column name if this stmt defines a column; else None."""

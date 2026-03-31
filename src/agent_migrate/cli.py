@@ -69,24 +69,40 @@ def _handle_error(exc: Exception, *, use_json: bool = False) -> None:
     raise typer.Exit(code=1)
 
 
+def _parse_exclude_tables(value: str | None) -> list[str] | None:
+    """Parse comma-separated table names into a list."""
+    if not value:
+        return None
+    return [t.strip() for t in value.split(",") if t.strip()]
+
+
 @app.command()
 def snapshot(
     path: Path = typer.Option(Path("."), "--path", "-p", help="Project root path"),
     db_url: str | None = typer.Option(
         None, "--db-url", help="Database URL (auto-detected if omitted)"
     ),
+    schema: str = typer.Option("public", "--schema", "-s", help="DB schema to inspect"),
+    exclude_tables: str | None = typer.Option(
+        None, "--exclude-tables", help="Comma-separated table names to exclude from drift detection"
+    ),
     use_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Show current model + DB state (agent-friendly format)."""
     try:
+        excluded = _parse_exclude_tables(exclude_tables)
         if use_json:
             from agent_migrate.formatter import json_snapshot  # noqa: PLC0415
             from agent_migrate.orchestrator import _db_label  # noqa: PLC0415
 
-            r = _orchestrator.pipeline_result(path.resolve(), db_url)
+            r = _orchestrator.pipeline_result(
+                path.resolve(), db_url, schema=schema, exclude_tables=excluded
+            )
             print(json_snapshot(r.models, r.tables, r.diffs, r.ref_map, _db_label(r.db_url)))  # noqa: T201
         else:
-            result = _orchestrator.snapshot(path.resolve(), db_url)
+            result = _orchestrator.snapshot(
+                path.resolve(), db_url, schema=schema, exclude_tables=excluded
+            )
             console.print(result)
     except (AgentMigrateError, Exception) as exc:
         _handle_error(exc, use_json=use_json)
@@ -96,17 +112,26 @@ def snapshot(
 def diff(
     path: Path = typer.Option(Path("."), "--path", "-p", help="Project root path"),
     db_url: str | None = typer.Option(None, "--db-url", help="Database URL"),
+    schema: str = typer.Option("public", "--schema", "-s", help="DB schema to inspect"),
+    exclude_tables: str | None = typer.Option(
+        None, "--exclude-tables", help="Comma-separated table names to exclude from drift detection"
+    ),
     use_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Show differences between models and DB."""
     try:
+        excluded = _parse_exclude_tables(exclude_tables)
         if use_json:
             from agent_migrate.formatter import json_diff  # noqa: PLC0415
 
-            r = _orchestrator.pipeline_result(path.resolve(), db_url)
+            r = _orchestrator.pipeline_result(
+                path.resolve(), db_url, schema=schema, exclude_tables=excluded
+            )
             print(json_diff(r.diffs, r.ref_map))  # noqa: T201
         else:
-            result = _orchestrator.diff(path.resolve(), db_url)
+            result = _orchestrator.diff(
+                path.resolve(), db_url, schema=schema, exclude_tables=excluded
+            )
             console.print(result)
     except (AgentMigrateError, Exception) as exc:
         _handle_error(exc, use_json=use_json)
@@ -116,19 +141,28 @@ def diff(
 def plan(
     path: Path = typer.Option(Path("."), "--path", "-p", help="Project root path"),
     db_url: str | None = typer.Option(None, "--db-url", help="Database URL"),
+    schema: str = typer.Option("public", "--schema", "-s", help="DB schema to inspect"),
+    exclude_tables: str | None = typer.Option(
+        None, "--exclude-tables", help="Comma-separated table names to exclude from drift detection"
+    ),
     use_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Show migration plan with risk analysis."""
     try:
+        excluded = _parse_exclude_tables(exclude_tables)
         if use_json:
             from agent_migrate.formatter import json_plan  # noqa: PLC0415
             from agent_migrate.migration.planner import MigrationPlanner  # noqa: PLC0415
 
-            r = _orchestrator.pipeline_result(path.resolve(), db_url)
+            r = _orchestrator.pipeline_result(
+                path.resolve(), db_url, schema=schema, exclude_tables=excluded
+            )
             migration_plan = MigrationPlanner().plan(r.diffs, r.models)
             print(json_plan(migration_plan, r.ref_map))  # noqa: T201
         else:
-            result = _orchestrator.plan(path.resolve(), db_url)
+            result = _orchestrator.plan(
+                path.resolve(), db_url, schema=schema, exclude_tables=excluded
+            )
             console.print(result)
     except (AgentMigrateError, Exception) as exc:
         _handle_error(exc, use_json=use_json)
@@ -139,6 +173,10 @@ def generate(
     message: str = typer.Option(..., "-m", "--message", help="Migration description"),
     path: Path = typer.Option(Path("."), "--path", "-p", help="Project root path"),
     db_url: str | None = typer.Option(None, "--db-url", help="Database URL"),
+    schema: str = typer.Option("public", "--schema", "-s", help="DB schema to inspect"),
+    exclude_tables: str | None = typer.Option(
+        None, "--exclude-tables", help="Comma-separated table names to exclude from drift detection"
+    ),
     format: str = typer.Option(
         "auto", "--format", help="Output format: auto, alembic, or sql"
     ),
@@ -146,7 +184,11 @@ def generate(
 ) -> None:
     """Generate a migration file."""
     try:
-        file_path = _orchestrator.generate(path.resolve(), message, db_url, format)
+        excluded = _parse_exclude_tables(exclude_tables)
+        file_path = _orchestrator.generate(
+            path.resolve(), message, db_url, format,
+            schema=schema, exclude_tables=excluded,
+        )
         if use_json:
             print(json.dumps({"generated": str(file_path)}))  # noqa: T201
         else:
@@ -165,11 +207,19 @@ def apply(
     ),
     path: Path = typer.Option(Path("."), "--path", "-p", help="Project root path"),
     db_url: str | None = typer.Option(None, "--db-url", help="Database URL"),
+    schema: str = typer.Option("public", "--schema", "-s", help="DB schema to inspect"),
+    exclude_tables: str | None = typer.Option(
+        None, "--exclude-tables", help="Comma-separated table names to exclude from drift detection"
+    ),
     use_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Apply migration (dry-run by default; use --execute to apply)."""
     try:
-        result = _orchestrator.apply(path.resolve(), db_url, execute=execute, force=force)
+        excluded = _parse_exclude_tables(exclude_tables)
+        result = _orchestrator.apply(
+            path.resolve(), db_url, execute=execute, force=force,
+            schema=schema, exclude_tables=excluded,
+        )
         if use_json:
             print(json.dumps({"result": result}))  # noqa: T201
         else:
@@ -182,17 +232,26 @@ def apply(
 def rls(
     path: Path = typer.Option(Path("."), "--path", "-p", help="Project root path"),
     db_url: str | None = typer.Option(None, "--db-url", help="Database URL"),
+    schema: str = typer.Option("public", "--schema", "-s", help="DB schema to inspect"),
+    exclude_tables: str | None = typer.Option(
+        None, "--exclude-tables", help="Comma-separated table names to exclude from drift detection"
+    ),
     use_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Show RLS policy status for all tables."""
     try:
+        excluded = _parse_exclude_tables(exclude_tables)
         if use_json:
             from agent_migrate.formatter import json_rls  # noqa: PLC0415
 
-            r = _orchestrator.pipeline_result(path.resolve(), db_url)
+            r = _orchestrator.pipeline_result(
+                path.resolve(), db_url, schema=schema, exclude_tables=excluded
+            )
             print(json_rls(r.rls_statuses, r.rls_policies, r.roles))  # noqa: T201
         else:
-            result = _orchestrator.rls(path.resolve(), db_url)
+            result = _orchestrator.rls(
+                path.resolve(), db_url, schema=schema, exclude_tables=excluded
+            )
             console.print(result)
     except (AgentMigrateError, Exception) as exc:
         _handle_error(exc, use_json=use_json)
@@ -202,6 +261,10 @@ def rls(
 def auto(
     path: Path = typer.Option(Path("."), "--path", "-p", help="Project root path"),
     db_url: str | None = typer.Option(None, "--db-url", help="Database URL"),
+    schema: str = typer.Option("public", "--schema", "-s", help="DB schema to inspect"),
+    exclude_tables: str | None = typer.Option(
+        None, "--exclude-tables", help="Comma-separated table names to exclude from drift detection"
+    ),
     use_json: bool = typer.Option(False, "--json", help="Output as JSON"),
     do_generate: bool = typer.Option(False, "--generate", help="Also generate migration"),
     message: str | None = typer.Option(None, "-m", "--message", help="Migration message"),
@@ -218,7 +281,10 @@ def auto(
         )
         from agent_migrate.orchestrator import _db_label  # noqa: PLC0415
 
-        r = _orchestrator.pipeline_result(path.resolve(), db_url)
+        excluded = _parse_exclude_tables(exclude_tables)
+        r = _orchestrator.pipeline_result(
+            path.resolve(), db_url, schema=schema, exclude_tables=excluded
+        )
         migration_plan = _orchestrator._planner.plan(r.diffs, r.models) if r.diffs else None
 
         generated_file: str | None = None
@@ -258,6 +324,89 @@ def auto(
                     )
     except (AgentMigrateError, Exception) as exc:
         _handle_error(exc, use_json=use_json)
+
+
+@app.command()
+def version(
+    use_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+    check: bool = typer.Option(
+        True, "--check/--no-check", help="Check for updates (default: True)"
+    ),
+) -> None:
+    """Show current version and check for updates."""
+    from agent_migrate.updater import check_version, get_current_version  # noqa: PLC0415
+
+    if not check:
+        current = get_current_version()
+        if use_json:
+            print(json.dumps({"current": current}))  # noqa: T201
+        else:
+            console.print(f"agent-migrate v{current}")
+        return
+
+    info = check_version()
+    if use_json:
+        print(json.dumps({  # noqa: T201
+            "current": info.current,
+            "latest": info.latest,
+            "update_available": info.update_available,
+            "error": info.error,
+        }))
+    else:
+        console.print(f"agent-migrate v{info.current}")
+        if info.error:
+            err_console.print(f"  {info.error}")
+        elif info.latest:
+            if info.update_available:
+                console.print(
+                    f"  Update available: v{info.current} → v{info.latest}"
+                )
+                console.print("  Run: agent-migrate update")
+            else:
+                console.print("  Up to date.")
+
+
+@app.command()
+def update(
+    use_json: bool = typer.Option(False, "--json", help="Output as JSON"),
+) -> None:
+    """Update agent-migrate to the latest version."""
+    from agent_migrate.updater import check_version, run_update  # noqa: PLC0415
+
+    info = check_version()
+
+    if not use_json:
+        console.print(f"Current: v{info.current}")
+        if info.latest:
+            console.print(f"Latest:  v{info.latest}")
+
+    if info.error and not info.latest:
+        if use_json:
+            print(json.dumps({  # noqa: T201
+                "success": False, "message": info.error,
+            }))
+        else:
+            err_console.print(f"Cannot check version: {info.error}")
+            console.print("Attempting update anyway...")
+
+    if not use_json:
+        console.print("Updating...")
+
+    success, message = run_update()
+
+    if use_json:
+        print(json.dumps({  # noqa: T201
+            "success": success,
+            "message": message,
+            "previous_version": info.current,
+            "target_version": info.latest,
+        }))
+    else:
+        if success:
+            console.print(f"[green]{message}[/green]")
+        else:
+            err_console.print(f"[red]{message}[/red]")
+            raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
